@@ -4,4 +4,5 @@
 with pkgs;
 mkShell.override { stdenv = gcc11Stdenv; }
 {
+  buildInputs = [ folly boost glog double-conversion ];
 }
