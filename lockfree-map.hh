@@ -1,138 +1,164 @@
 #pragma once
 
-/* 
+/*
  * This is an atomic lock-free hash map implementation.
  * Entries from the map CANNOT be deleted.
  * A hash map size must be provided statically.
- * Two hash functions are assumed - one for hashing the key, 
- * and a second-order hash function for hashing hash values in case of hash collisions.
- * When a valid bucket cannot be found get() will return a null pointer.
- * (By default 32 attempts to find a bucket are used.)
- * Hash collisions are not checked; you must check yourself for the unlikely event that two keys have the same hash.
+ * Two hash functions are assumed - one for hashing the key,
+ * and a second-order hash function for hashing hash values in case of hash
+ * collisions. When a valid bucket cannot be found get() will return a null
+ * pointer. (By default 32 attempts to find a bucket are used.) Hash collisions
+ * are not checked; you must check yourself for the unlikely event that two keys
+ * have the same hash.
  */
 
-#include <atomic>
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <stdexcept>
 
+#include "lock-free-iterators.hh"
+
 namespace lockfree {
 
-namespace {
+struct Rehash {
+    size_t operator()(size_t n) const {
+        constexpr uint64_t mul = 0x100000001b3;
 
-template <typename KEY, typename VALUE>
-struct Element_ {
-    size_t hash;
-    VALUE val;
+        uint64_t hash = 0xcbf29ce484222325;
+        hash ^= n;
+        hash *= mul;
 
-    Element_(const KEY& key, size_t hash_) : hash(hash_), val(key) {}
+        return hash;
+    }
 };
 
-}
+template <size_t Size,
+          typename KeyType,
+          typename ValueType,
+          typename HashFunc   = std::hash<KeyType>,
+          typename RehashFunc = Rehash,
+          size_t MaxTries     = 32>
+class AtomicHashMap {
+public:
+    using iterator_type       = iterator<AtomicHashMap>;
+    using const_iterator_type = const_iterator<AtomicHashMap>;
+    using key_type            = KeyType;
+    using value_type          = ValueType;
 
-template <size_t SIZE, typename KEY, typename VALUE>
-struct map {
+    friend iterator_type;
+    friend const_iterator_type;
 
-    ~map() {
-        for (size_t i = 0; i < SIZE; ++i) {
-            Element* elt = hashmap[i].load(std::memory_order_relaxed);
+    static constexpr auto size = Size;
 
-            if (elt != nullptr) {
-                delete elt;
-            }
-        }
-    }
+    ~AtomicHashMap();
 
-    VALUE* get(const KEY& key, auto&& hashfun1, auto&& hashfun2, size_t maxtries = 32) {
+    HashFunc   hash_function() const { return HashFunc(); }
+    RehashFunc rehash_function() const { return RehashFunc(); }
 
-        size_t hash = hashfun1(key);
-        size_t hash2 = hash;
+    ValueType* get(const KeyType& key);
+    template <typename... Args>
+    std::pair<iterator_type, bool> get_or_emplace(const KeyType& key, Args&&... args);
 
-        size_t tries = 0;
-        size_t bucket;
-        while (tries < maxtries) {
-            bucket = hash2 % SIZE;
-            Element* elt = hashmap[bucket].load(std::memory_order_relaxed);
+    iterator_type begin() { return iterator_type(*this, 0); }
+    iterator_type end() { return iterator_type(*this, Size); }
 
-            if (elt == nullptr) {
-                Element* newelt = new Element(key, hash);
-
-                if (hashmap[bucket].compare_exchange_weak(elt, newelt, std::memory_order_release, std::memory_order_relaxed)) {
-                    return &newelt->val;
-
-                } else if (elt->hash == hash) {
-                    delete newelt;
-                    return &elt->val;
-
-                } else if (elt->hash != 0) {
-                    delete newelt;
-                    hash2 = hashfun2(hash2);
-                }
-                
-            } else if (elt->hash == hash) {
-                return &elt->val;
-
-            } else if (elt->hash != 0) {
-                hash2 = hashfun2(hash2);
-            }
-            ++tries;
-        }
-
-        return nullptr;
-    }
-
-    struct iterator {
-        using container_type = map<SIZE, KEY, VALUE>;
-        size_t bucket;
-        typename container_type::Element* value;
-        container_type& self;
-
-        iterator(map<SIZE, KEY, VALUE>& s, size_t b) : bucket(b), value(nullptr), self(s) {
-            increment();
-        }
-
-        VALUE& operator*() const {
-            return value->val;
-        }
-
-        iterator& operator++() {
-            if (bucket < SIZE) {
-                ++bucket;
-                increment();
-            }
-            return *this;
-        }
-
-        bool operator==(const iterator& a) const {
-            return bucket == a.bucket;
-        }
-
-    private:
-        void increment() {
-            while (bucket < SIZE) {
-                value = self.hashmap[bucket].load(std::memory_order_relaxed);
-                if (value != nullptr) {
-                    break;
-                }
-                ++bucket;
-            }
-        }
-    };
-
-    iterator begin() {
-        return iterator(*this, 0);
-    }
-
-    iterator end() {
-        return iterator(*this, SIZE);
-    }
+    const_iterator_type begin() const { return const_iterator_type(*this, 0); }
+    const_iterator_type end() const { return const_iterator_type(*this, Size); }
 
 private:
+    struct Element {
+        const size_t    hash;
+        const KeyType   key;
+        ValueType val;
+        
+        template <typename... Args>
+        Element(size_t hash, const KeyType& key, Args&&...args) : hash(hash), key(key), val(std::forward<Args>(args)...) {}
+    };
 
-    using Element = Element_<KEY, VALUE>;
-
-    std::array<std::atomic<Element*>, SIZE> hashmap;
-    
+    std::array<std::atomic<Element*>, Size> hashmap_;
 };
 
+template <size_t Size, typename KeyType, typename ValueType, typename HashFunc, typename RehashFunc, size_t MaxTries>
+AtomicHashMap<Size, KeyType, ValueType, HashFunc, RehashFunc, MaxTries>::~AtomicHashMap() {
+    for (size_t i = 0; i < Size; ++i) {
+        Element* elt = hashmap_[i].load(std::memory_order_relaxed);
+
+        if (elt != nullptr) {
+            delete elt;
+        }
+    }
 }
+
+template <size_t Size, typename KeyType, typename ValueType, typename HashFunc, typename RehashFunc, size_t MaxTries>
+ValueType* AtomicHashMap<Size, KeyType, ValueType, HashFunc, RehashFunc, MaxTries>::get(const KeyType& key) {
+    const auto hasher   = hash_function();
+    const auto rehasher = rehash_function();
+
+    size_t hash  = hasher(key);
+    size_t hash2 = hash;
+
+    size_t tries = 0;
+    size_t bucket;
+    while (tries < MaxTries) {
+        bucket       = hash2 % Size;
+        Element* elt = hashmap_[bucket].load(std::memory_order_relaxed);
+
+        if (elt == nullptr) {
+            return nullptr;
+        } else if (elt->hash == hash) {
+            return &elt->val;
+
+        } else if (elt->hash != 0) {
+            hash2 = rehasher(hash2);
+        }
+        ++tries;
+    }
+
+    return nullptr;
+}
+
+template <size_t Size, typename KeyType, typename ValueType, typename HashFunc, typename RehashFunc, size_t MaxTries>
+template <typename... Args>
+std::pair<typename AtomicHashMap<Size, KeyType, ValueType, HashFunc, RehashFunc, MaxTries>::iterator_type, bool>
+AtomicHashMap<Size, KeyType, ValueType, HashFunc, RehashFunc, MaxTries>::get_or_emplace(const KeyType& key, Args&&... args) {
+    const auto hasher   = hash_function();
+    const auto rehasher = rehash_function();
+
+    size_t hash  = hasher(key);
+    size_t hash2 = hash;
+
+    size_t tries = 0;
+    size_t bucket;
+    while (tries < MaxTries) {
+        bucket       = hash2 % Size;
+        Element* elt = hashmap_[bucket].load(std::memory_order_relaxed);
+
+        if (elt == nullptr) {
+            Element* newelt = new Element(hash, key, std::forward<Args>(args)...);
+
+            if (hashmap_[bucket].compare_exchange_weak(elt, newelt, std::memory_order_release,
+                                                       std::memory_order_relaxed)) {
+                return {iterator_type(*this, bucket), true};
+
+            } else if (elt->hash == hash) {
+                delete newelt;
+                return {iterator_type(*this, bucket), false};
+
+            } else if (elt->hash != 0) {
+                delete newelt;
+                hash2 = rehasher(hash2);
+            }
+
+        } else if (elt->hash == hash) {
+            return {iterator_type(*this, bucket), false};
+        } else if (elt->hash != 0) {
+            hash2 = rehasher(hash2);
+        }
+        ++tries;
+    }
+
+    return {end(), false};
+}
+
+}  // namespace lockfree

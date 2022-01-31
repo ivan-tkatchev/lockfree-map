@@ -13,24 +13,17 @@ Usage:
 ```c++
 #include <lockfree-hash.hh>
 
-lockfree::map<32, std::string, counter_t> my_map;
+lockfree::AtomicHashMap<32, std::string, counter_t> map;
 
-counter_t* c = my_map.get("hello", 
-                          [](const std::string& key) { return hash(key); },
-                          [](size_t prev_hash) { return hash(prev_hash); });
+const auto&[it, inserted] = map.emplace("hello", 10);
+it->val += 5;
+counter_t* c = my_map.get("hello");
+
+assert(c->counter == 15);
                           
-// c will be nullptr in case of hash map overflow.
 
-for (counter_t& c : my_map) {
-  // 
+for (const auto& elem : my_map) {
+   // elem.val
+   // elem.key
 }
-```
-
-Note: the constructor of your value type (e.g. `counter_t` in the example) *must* accept the key as the argument:
-
-```c++
-struct counter_t {
-    std::atomic<int> value;
-    counter_t(const std::string& key) : value(0) {}
-};
 ```

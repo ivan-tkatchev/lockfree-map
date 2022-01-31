@@ -1,0 +1,29 @@
+---
+Language: Cpp
+BasedOnStyle: Chromium
+AccessModifierOffset: '-4'
+AlignConsecutiveAssignments: 'true'
+AlignConsecutiveDeclarations: 'true'
+AlignOperands: 'true'
+AllowShortIfStatementsOnASingleLine: 'false'
+AllowShortLoopsOnASingleLine: 'false'
+AllowShortFunctionsOnASingleLine: 'Inline'
+AllowShortCaseLabelsOnASingleLine: 'true'
+BreakConstructorInitializers: 'BeforeComma'
+ColumnLimit: '120'
+ConstructorInitializerAllOnOneLineOrOnePerLine: 'true'
+ContinuationIndentWidth: '4'
+ConstructorInitializerIndentWidth: '4'
+FixNamespaceComments: 'true'
+IndentCaseLabels: 'true'
+IndentWidth: '4'
+KeepEmptyLinesAtTheStartOfBlocks: 'false'
+MaxEmptyLinesToKeep: '1'
+NamespaceIndentation: None
+PointerAlignment: Left
+SortIncludes: 'true'
+SpacesInAngles: 'false'
+SpacesInParentheses: 'false'
+TabWidth: '4'
+UseTab: Never
+---

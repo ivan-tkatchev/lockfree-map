@@ -1,15 +1,14 @@
 
 #include "lockfree-map.hh"
 
-#include <thread>
+#include <iostream>
+#include <map>
 #include <mutex>
 #include <random>
 #include <string>
-#include <iostream>
-#include <map>
+#include <thread>
 
 uint64_t hash(const char* c, size_t n, uint64_t init = 0xcbf29ce484222325, uint64_t mul = 0x100000001b3) {
-
     uint64_t hash = init;
 
     while (n > 0) {
@@ -22,36 +21,38 @@ uint64_t hash(const char* c, size_t n, uint64_t init = 0xcbf29ce484222325, uint6
     return hash;
 }
 
-uint64_t hash_str(const std::string& s) {
-    return hash(s.data(), s.size());
-}
+struct Hash {
+    uint64_t operator()(const std::string& s) const { return ::hash(s.data(), s.size()); }
+};
 
-uint64_t hash_size_t(size_t v) {
-    return hash((const char*)&v, sizeof(v));
-}
+struct Rehash {
+    uint64_t operator()(size_t v) const { return hash((const char*)&v, sizeof(v)); }
+};
 
 struct counter_t {
-    std::string key;
     std::atomic<int> counter;
-
-    counter_t() {}
-    counter_t(const std::string& key_) : key(key_), counter(0) {}
 };
 
 struct Test {
-    lockfree::map<32, std::string, counter_t> lf_map;
+    using AtomicMap = lockfree::AtomicHashMap<32, std::string, counter_t, Hash, Rehash>;
+    AtomicMap                  lf_map;
     std::map<std::string, int> std_map;
-    std::mutex mutex;
+    std::mutex                 mutex;
 
-    void inc(const std::string& key, int howmuch = 1) {
-        counter_t* v = lf_map.get(key, hash_str, hash_size_t);
-        if (v == nullptr) {
-            throw std::runtime_error("Could not find bucket.");
+    void inc(const std::string& key, int howmuch = 2) {
+        const auto [it, inserted] = lf_map.get_or_emplace(key, howmuch);
+
+        if (it == lf_map.end()) {
+            throw std::runtime_error("Can't find and insert element");
         }
-        if (v->key != key) {
+        if (!inserted) {
+            it->val.counter += howmuch;
+        }
+
+        if (it->key != key) {
             throw std::runtime_error("Hash collision for key.");
         }
-        v->counter += howmuch;
+
         std::lock_guard lock{mutex};
         std_map[key] += howmuch;
     }
@@ -68,7 +69,7 @@ int random(size_t seed, int low, int hi) {
 }
 
 void go_thread(Test& test) {
-    size_t seed = ::gettid();
+    size_t seed = std::hash<std::thread::id>{}(std::this_thread::get_id());
 
     for (size_t i = 0; i < 100000; ++i) {
         test.inc(std::to_string(random(seed, 1, 15)));
@@ -95,7 +96,7 @@ void go(Test& test) {
 
 void print_map(const auto& map) {
     std::cout << "===" << std::endl;
-    for (const auto& [ key, val ] : map) {
+    for (const auto& [key, val] : map) {
         std::cout << " " << key << " : " << val << std::endl;
     }
     std::cout << "---" << std::endl;
@@ -106,13 +107,13 @@ void check(Test& test) {
     std::map<std::string, int> std_map;
 
     int lf_total = 0;
-    for (counter_t& c : test.lf_map) {
-        lf_map[c.key] = c.counter.load();
-        lf_total += lf_map[c.key];
+    for (const auto& elem : test.lf_map) {
+        lf_map[elem.key] = elem.val.counter.load();
+        lf_total += lf_map[elem.key];
     }
 
     int std_total = 0;
-    for (const auto& [ key, val ] : test.std_map) {
+    for (const auto& [key, val] : test.std_map) {
         std_map[key] = val;
         std_total += std_map[key];
     }
@@ -132,12 +133,11 @@ void check(Test& test) {
 }
 
 int main(int argc, char** argv) {
-
     try {
         Test test;
         go(test);
         check(test);
-        
+
     } catch (std::exception& e) {
         std::cout << "ERROR: " << e.what() << std::endl;
     }
