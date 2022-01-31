@@ -132,7 +132,7 @@ AtomicHashMap<Size, KeyType, ValueType, HashFunc, RehashFunc, MaxTries>::get_or_
     size_t bucket;
     while (tries < MaxTries) {
         bucket       = hash2 % Size;
-        Element* elt = hashmap_[bucket].load(std::memory_order_acq_rel);
+        Element* elt = hashmap_[bucket].load(std::memory_order_relaxed);
 
         if (elt == nullptr) {
             Element* newelt = new Element(hash, key, std::forward<Args>(args)...);

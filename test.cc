@@ -21,30 +21,34 @@ uint64_t hash(const char* c, size_t n, uint64_t init = 0xcbf29ce484222325, uint6
     return hash;
 }
 
-uint64_t hash_str(const std::string& s) {
-    return hash(s.data(), s.size());
-}
+struct Hash {
+    uint64_t operator()(const std::string& s) const { return ::hash(s.data(), s.size()); }
+};
 
-uint64_t hash_size_t(size_t v) {
-    return hash((const char*)&v, sizeof(v));
-}
+struct Rehash {
+    uint64_t operator()(size_t v) const { return hash((const char*)&v, sizeof(v)); }
+};
 
 struct counter_t {
     std::atomic<int> counter;
 };
 
 struct Test {
-    using AtomicMap = lockfree::AtomicHashMap<32, std::string, counter_t>;
+    using AtomicMap = lockfree::AtomicHashMap<32, std::string, counter_t, Hash, Rehash>;
     AtomicMap                  lf_map;
     std::map<std::string, int> std_map;
     std::mutex                 mutex;
 
     void inc(const std::string& key, int howmuch = 2) {
         const auto [it, inserted] = lf_map.get_or_emplace(key, howmuch);
-        if(!inserted){
-             it->val.counter += howmuch;
+
+        if (it == lf_map.end()) {
+            throw std::runtime_error("Can't find and insert element");
         }
-       
+        if (!inserted) {
+            it->val.counter += howmuch;
+        }
+
         if (it->key != key) {
             throw std::runtime_error("Hash collision for key.");
         }
@@ -65,7 +69,7 @@ int random(size_t seed, int low, int hi) {
 }
 
 void go_thread(Test& test) {
-    size_t seed = 0;
+    size_t seed = std::hash<std::thread::id>{}(std::this_thread::get_id());
 
     for (size_t i = 0; i < 100000; ++i) {
         test.inc(std::to_string(random(seed, 1, 15)));
